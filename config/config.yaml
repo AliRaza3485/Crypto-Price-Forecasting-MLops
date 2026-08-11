@@ -36,3 +36,31 @@ split:
   y_train_file: "y_train.parquet"
   x_test_file: "X_test.parquet"
   y_test_file: "y_test.parquet"
+
+# ============================================================
+# Model settings
+# ============================================================
+# The winning RandomForest config. Hyperparameter SEARCH is experimentation and
+# lives in notebooks/02_model_experiment.ipynb (Optuna + TimeSeriesSplit). These
+# are the best params it found — production training just reads them, so every
+# run is fast, deterministic and reproducible.
+model:
+  algorithm: "random_forest"
+  random_state: 42
+  params:
+    n_estimators: 250
+    max_depth: 3
+    min_samples_leaf: 34
+    max_features: 0.5649947641875525
+  # Where the trained model is saved locally (MLflow registry is the source of truth)
+  model_dir: "models"
+  model_file: "rf_model.joblib"
+
+# ============================================================
+# MLflow / DagsHub experiment tracking
+# ============================================================
+# NOTE: credentials are NOT here — they live in .env (git-ignored). See .env.example.
+mlflow:
+  experiment_name: "btc-return-forecasting"     # groups all runs on DagsHub
+  run_name: "random_forest_prod"                # this training run's name
+  registered_model_name: "btc-rf-forecaster"    # versioned name in the Model Registry

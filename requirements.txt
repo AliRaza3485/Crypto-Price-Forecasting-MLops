@@ -23,6 +23,7 @@ colorama==0.4.6
 comm==0.2.3
 configobj==5.0.9
 cryptography==50.0.0
+dagshub==0.7.1
 dateparser==1.4.2
 debugpy==1.8.21
 dictdiffer==0.10.0
@@ -57,6 +58,7 @@ ipython==9.16.1
 ipython_pygments_lexers==1.1.1
 iterative-telemetry==0.0.10
 jedi==0.20.0
+joblib==1.5.3
 jupyter_client==8.9.1
 jupyter_core==5.9.1
 jupyterlab_widgets==3.0.16
@@ -68,12 +70,14 @@ MarkupSafe==3.0.3
 matplotlib-inline==0.2.2
 mdurl==0.1.2
 mistune==3.3.4
+mlflow==3.11.1
 multidict==6.7.1
 narwhals==2.24.0
 nest-asyncio2==1.7.2
 networkx==3.6.1
 numpy==2.5.2
 omegaconf==2.3.1
+optuna==4.9.0
 orjson==3.11.9
 packaging==26.3
 pandas==3.0.5
@@ -116,6 +120,7 @@ rfc3986-validator==0.1.1
 rich==15.0.0
 rpds-py==2026.6.3
 ruamel.yaml==0.19.1
+scikit-learn==1.8.0
 scmrepo==3.6.2
 semver==3.0.4
 Send2Trash==2.1.0
@@ -150,6 +155,7 @@ webencodings==0.5.1
 websocket-client==1.9.0
 websockets==17.0.1
 widgetsnbextension==4.0.15
+xgboost==3.4.0
 yarl==1.24.5
 zc.lockfile==4.0
 zipp==4.1.0
