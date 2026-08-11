@@ -1,0 +1,15 @@
+# ============================================================
+# Central configuration for Crypto-Price-Forecasting-MLops
+# Change values HERE — no need to touch any code.
+# All paths are relative to the project root.
+# ============================================================
+
+data:
+  # --- Which market to pull from Binance ---
+  symbol: "BTCUSDT"            # Bitcoin priced in USDT
+  interval: "1h"              # candle size: 1m, 5m, 15m, 1h, 4h, 1d ...
+  lookback: "2 years ago UTC"  # how far back to fetch
+
+  # --- Where the raw data is saved (relative to project root) ---
+  raw_dir: "data/raw"
+  raw_file: "btc.parquet"
