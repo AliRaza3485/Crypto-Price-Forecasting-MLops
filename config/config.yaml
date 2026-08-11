@@ -17,3 +17,12 @@ data:
   # --- Where the cleaned/processed data is saved ---
   processed_dir: "data/processed"
   processed_file: "btc_clean.parquet"
+
+# ============================================================
+# Feature engineering settings
+# ============================================================
+features:
+  target_horizon: 1                 # predict this many hours ahead (1 = next hour)
+  lags: [1, 2, 3, 6, 12, 24]        # past hourly returns to feed the model
+  roll_windows: [6, 12, 24]         # rolling window sizes, in hours
+  featured_file: "btc_features.parquet"
