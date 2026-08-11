@@ -40,6 +40,7 @@ dvc-studio-client==0.23.0
 dvc-task==0.40.2
 entrypoints==0.4
 executing==2.2.1
+fastapi==0.128.8
 filelock==3.32.2
 flatten-dict==0.5.0
 flufl.lock==9.1.0
@@ -50,6 +51,7 @@ gitdb==4.0.12
 GitPython==3.1.59
 grandalf==0.8
 gto==1.10.1
+httpx==0.28.1
 huey==3.3.4
 hydra-core==1.3.5
 idna==3.18
@@ -105,6 +107,7 @@ pygit2==1.20.0
 Pygments==2.20.0
 pygtrie==2.5.0
 pyparsing==3.3.2
+pytest==9.0.3
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 python-json-logger==4.1.0
@@ -146,6 +149,7 @@ tzdata==2026.3
 tzlocal==5.4.4
 uri-template==1.3.0
 urllib3==2.7.0
+uvicorn==0.40.0
 vine==5.1.0
 voluptuous==0.16.0
 waitress==3.0.2
