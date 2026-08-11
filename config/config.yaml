@@ -13,3 +13,7 @@ data:
   # --- Where the raw data is saved (relative to project root) ---
   raw_dir: "data/raw"
   raw_file: "btc.parquet"
+
+  # --- Where the cleaned/processed data is saved ---
+  processed_dir: "data/processed"
+  processed_file: "btc_clean.parquet"
