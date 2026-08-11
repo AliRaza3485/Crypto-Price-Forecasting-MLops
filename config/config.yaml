@@ -26,3 +26,13 @@ features:
   lags: [1, 2, 3, 6, 12, 24]        # past hourly returns to feed the model
   roll_windows: [6, 12, 24]         # rolling window sizes, in hours
   featured_file: "btc_features.parquet"
+
+# ============================================================
+# Train / test split settings
+# ============================================================
+split:
+  test_size: 0.2                    # last 20% of time -> test (chronological, NO shuffle)
+  x_train_file: "X_train.parquet"
+  y_train_file: "y_train.parquet"
+  x_test_file: "X_test.parquet"
+  y_test_file: "y_test.parquet"
