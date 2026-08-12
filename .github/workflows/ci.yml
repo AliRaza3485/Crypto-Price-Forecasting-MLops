@@ -4,11 +4,15 @@
 #   test   -> install slim deps + run the test suite (every push & PR to main)
 #   docker -> build the serving image + push to Docker Hub
 #             (only after tests pass, and only on push to main -- not PRs)
+#   deploy -> SSH into the EC2 box, pull the freshly-pushed :latest image,
+#             and restart the container (only after docker, push to main only)
 #
-# Docker Hub creds come from repo secrets (added in GitHub -> Settings ->
-# Secrets and variables -> Actions):
-#   DOCKERHUB_USERNAME  -- your Docker Hub username
-#   DOCKERHUB_TOKEN     -- a Docker Hub access token (NOT your password)
+# Repo secrets (GitHub -> Settings -> Secrets and variables -> Actions):
+#   DOCKERHUB_USERNAME  -- Docker Hub username (also the image namespace)
+#   DOCKERHUB_TOKEN     -- Docker Hub access token (NOT your password)
+#   AWS_EC2_HOST        -- EC2 Elastic IP / public DNS
+#   AWS_EC2_USER        -- SSH user (ubuntu)
+#   AWS_EC2_SSH_KEY     -- contents of the .pem private key
 # ============================================================
 name: CI/CD
 
@@ -71,3 +75,36 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/crypto-price-forecasting:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to EC2
+    needs: docker                            # only after the new image is pushed
+    if: github.event_name == 'push'          # push to main only, never on PRs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Pull latest image on EC2 and restart the container
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.AWS_EC2_HOST }}
+          username: ${{ secrets.AWS_EC2_USER }}
+          key: ${{ secrets.AWS_EC2_SSH_KEY }}
+          script: |
+            set -e
+            IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/crypto-price-forecasting:latest"
+
+            # Grab the freshly-built image (public repo -> no login needed).
+            docker pull "$IMAGE"
+
+            # Replace the running container (ignore errors if it's the first run).
+            docker stop crypto-api 2>/dev/null || true
+            docker rm   crypto-api 2>/dev/null || true
+
+            docker run -d \
+              --name crypto-api \
+              --restart unless-stopped \
+              -p 8000:8000 \
+              "$IMAGE"
+
+            # Drop the now-dangling old image layers so the disk doesn't fill up.
+            docker image prune -f
