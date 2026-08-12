@@ -35,11 +35,12 @@ import sys
 
 import joblib
 
-import mlflow
-import mlflow.sklearn
-from mlflow.models import infer_signature
 from sklearn.ensemble import RandomForestRegressor
 
+# NOTE: mlflow is a TRAINING-only dep, NOT in the slim requirements-ci.txt.
+# It is imported lazily inside promote()/log_rejection() so this module (and
+# its pure helpers) can be imported and tested in CI without mlflow installed.
+# The EC2 retrain box has it via requirements-train.txt for real runs.
 from src.config import CONFIG, get_path
 from src.data import data_ingestion, make_dataset, make_split
 from src.features import make_features
@@ -151,6 +152,10 @@ def promote(model, cand_metrics: dict, champ_metrics: dict | None, X_train) -> N
     """Log the win to MLflow, register the model, overwrite the local champion
     joblib, and try to restart serving so it picks up the new weights.
     """
+    import mlflow
+    import mlflow.sklearn
+    from mlflow.models import infer_signature
+
     setup_mlflow()
 
     with mlflow.start_run(run_name="retrain_promoted") as run:
@@ -208,6 +213,8 @@ def log_rejection(cand_metrics: dict, champ_metrics: dict | None) -> None:
     """Record that a retrain ran but the champion was kept — a visible trail
     on DagsHub even when nothing changes in production.
     """
+    import mlflow
+
     setup_mlflow()
     with mlflow.start_run(run_name="retrain_rejected") as run:
         mlflow.log_metrics(cand_metrics)

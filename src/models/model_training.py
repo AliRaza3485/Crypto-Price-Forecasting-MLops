@@ -36,15 +36,17 @@ import sys
 import joblib
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
-
-import mlflow
-import mlflow.sklearn
-from mlflow.models import infer_signature
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from src.config import CONFIG, get_path
+
+# NOTE: mlflow and python-dotenv are TRAINING-only deps and are deliberately
+# NOT in the slim requirements-ci.txt (which also builds the serving image).
+# They are imported lazily inside setup_mlflow()/train() so this module can be
+# imported — and its pure helpers (load_splits, evaluate) tested in CI —
+# without those heavy packages installed. Serving/CI stays slim; the EC2
+# retrain box (requirements-train.txt) has them for real runs.
 
 # MLflow prints a "🏃 View run ... at <url>" line (with an emoji) when a run
 # ends. The default Windows console codec (cp1252) can't encode that emoji and
@@ -113,6 +115,9 @@ def setup_mlflow() -> None:
     Fails fast with a clear message if the token is missing or still the
     placeholder — so a bad run never silently logs nowhere.
     """
+    from dotenv import load_dotenv  # lazy: training-only dep (see top-of-file note)
+    import mlflow
+
     load_dotenv()  # .env -> environment variables (MLflow reads them itself)
 
     required = ["MLFLOW_TRACKING_URI", "MLFLOW_TRACKING_USERNAME", "MLFLOW_TRACKING_PASSWORD"]
@@ -134,6 +139,10 @@ def setup_mlflow() -> None:
 
 def train():
     """Train the tuned RandomForest, evaluate, log + register to MLflow."""
+    import mlflow
+    import mlflow.sklearn
+    from mlflow.models import infer_signature
+
     X_train, y_train, X_test, y_test = load_splits()
     setup_mlflow()
 
