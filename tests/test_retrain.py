@@ -10,6 +10,12 @@ raise -- if the test passes, they were never called.
 
 import pytest
 
+# src.models.retrain imports mlflow at module level, which is a training-only
+# dependency not installed in the slim CI/serving environment (see
+# requirements.txt comment). Skip this whole module instead of erroring out
+# when mlflow isn't available.
+pytest.importorskip("mlflow")
+
 from src.models import retrain
 
 
@@ -21,6 +27,7 @@ def make_metrics(rmse: float) -> dict:
 
 
 # --- decide_promotion ---------------------------------------------------
+
 
 def test_decide_promotion_no_champion_promotes():
     # First-ever run: nothing to lose to, so promote unconditionally.
@@ -62,10 +69,12 @@ def test_decide_promotion_better_by_exactly_margin_promotes():
 
 # --- should_retrain -------------------------------------------------------
 
+
 def _forbid_network_calls(monkeypatch):
     """Monkeypatch the network-facing drift functions to blow up if called,
     so a passing test proves the "no network" shortcuts really skip them.
     """
+
     def _boom(*args, **kwargs):
         raise AssertionError("get_current_features/compute_drift should not be called")
 
@@ -92,7 +101,12 @@ def test_should_retrain_drift_gate_off_skips_drift_check(monkeypatch):
 
 def test_should_retrain_gate_on_drift_detected(monkeypatch):
     monkeypatch.setattr("src.models.retrain.DRIFT_GATE", True)
-    fake_report = {"drift_detected": True, "n_drifted": 4, "n_features": 14, "features": []}
+    fake_report = {
+        "drift_detected": True,
+        "n_drifted": 4,
+        "n_features": 14,
+        "features": [],
+    }
 
     monkeypatch.setattr("src.models.retrain.get_current_features", lambda: object())
     monkeypatch.setattr("src.models.retrain.compute_drift", lambda current: fake_report)
@@ -105,7 +119,12 @@ def test_should_retrain_gate_on_drift_detected(monkeypatch):
 
 def test_should_retrain_gate_on_no_drift(monkeypatch):
     monkeypatch.setattr("src.models.retrain.DRIFT_GATE", True)
-    fake_report = {"drift_detected": False, "n_drifted": 0, "n_features": 14, "features": []}
+    fake_report = {
+        "drift_detected": False,
+        "n_drifted": 0,
+        "n_features": 14,
+        "features": [],
+    }
 
     monkeypatch.setattr("src.models.retrain.get_current_features", lambda: object())
     monkeypatch.setattr("src.models.retrain.compute_drift", lambda current: fake_report)
@@ -117,6 +136,7 @@ def test_should_retrain_gate_on_no_drift(monkeypatch):
 
 
 # --- restart_serving --------------------------------------------------------
+
 
 class _FakeCompletedProcess:
     """Minimal stand-in for subprocess.CompletedProcess."""
