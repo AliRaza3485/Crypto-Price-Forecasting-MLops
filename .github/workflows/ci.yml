@@ -1,0 +1,37 @@
+# ============================================================
+# Continuous Integration: install slim deps + run the test suite.
+#
+# Runs on every push and PR to main. This is the CI half only -- building and
+# pushing the Docker image (CD) is added in a later job once this is green.
+# ============================================================
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+
+      - name: Install dependencies (slim CI set)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: Run tests
+        run: python -m pytest tests/ -v

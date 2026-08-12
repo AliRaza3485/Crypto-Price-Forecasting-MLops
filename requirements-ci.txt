@@ -1,0 +1,34 @@
+# ============================================================
+# Slim dependency set for CI + serving (NOT training).
+# ------------------------------------------------------------
+# The full requirements.txt is a Windows `pip freeze` (~130 pkgs) that includes
+# training/notebook tooling (mlflow, dvc, dagshub, xgboost, optuna, jupyter...)
+# and Windows-only packages (pywin32, pywinpty) that break on Linux CI.
+#
+# This file lists ONLY what's needed to import the app and run the tests -- so
+# CI installs fast on Linux, and the same file later seeds a slim Docker
+# serving image. Training deps stay in requirements.txt.
+# ============================================================
+
+# --- Web serving ---
+fastapi==0.128.8
+uvicorn==0.40.0
+pydantic==2.13.4
+
+# --- Data / features / model ---
+numpy==2.5.2
+pandas==3.0.5
+pyarrow==25.0.1           # parquet engine (reading X_train for drift reference)
+scikit-learn==1.8.0       # needed to unpickle the trained RandomForest
+scipy==1.17.1             # KS test for drift detection
+joblib==1.5.3             # loads models/rf_model.joblib
+
+# --- Live data source ---
+python-binance==1.0.37
+
+# --- Config ---
+PyYAML==6.0.3
+
+# --- Tests ---
+pytest==9.0.3
+httpx==0.28.1             # required by fastapi's TestClient
