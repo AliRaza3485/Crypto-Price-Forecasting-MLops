@@ -1,10 +1,16 @@
 # ============================================================
-# Continuous Integration: install slim deps + run the test suite.
+# CI/CD pipeline.
 #
-# Runs on every push and PR to main. This is the CI half only -- building and
-# pushing the Docker image (CD) is added in a later job once this is green.
+#   test   -> install slim deps + run the test suite (every push & PR to main)
+#   docker -> build the serving image + push to Docker Hub
+#             (only after tests pass, and only on push to main -- not PRs)
+#
+# Docker Hub creds come from repo secrets (added in GitHub -> Settings ->
+# Secrets and variables -> Actions):
+#   DOCKERHUB_USERNAME  -- your Docker Hub username
+#   DOCKERHUB_TOKEN     -- a Docker Hub access token (NOT your password)
 # ============================================================
-name: CI
+name: CI/CD
 
 on:
   push:
@@ -35,3 +41,33 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -v
+
+  docker:
+    name: Build & push Docker image
+    needs: test                              # only if tests pass
+    if: github.event_name == 'push'          # push to main only, never on PRs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/crypto-price-forecasting:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/crypto-price-forecasting:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,39 @@
+# Keep the Docker build context small + the image clean.
+# Everything here is excluded from `COPY` and never sent to the daemon.
+
+# Version control / CI
+.git
+.github
+.gitignore
+
+# Python caches / envs
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Notebooks, tests, docs -- not needed to serve
+notebooks/
+tests/
+*.md
+
+# Data (large, DVC-tracked) -- not shipped in the serving image
+data/
+.dvc/
+*.dvc
+
+# Training-only deps file (image uses requirements-ci.txt)
+requirements.txt
+
+# Secrets / local env -- MUST never enter an image
+.env
+*.env
+
+# Editor / OS cruft
+.vscode/
+.idea/
+.DS_Store
