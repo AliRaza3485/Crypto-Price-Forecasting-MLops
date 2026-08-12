@@ -1,3 +1,116 @@
+# # ============================================================
+# # CI/CD pipeline.
+# #
+# #   test   -> install slim deps + run the test suite (every push & PR to main)
+# #   docker -> build the serving image + push to Docker Hub
+# #             (only after tests pass, and only on push to main -- not PRs)
+# #   deploy -> SSH into the EC2 box, pull the freshly-pushed :latest image,
+# #             and restart the container (only after docker, push to main only)
+# #
+# # Repo secrets (GitHub -> Settings -> Secrets and variables -> Actions):
+# #   DOCKERHUB_USERNAME  -- Docker Hub username (also the image namespace)
+# #   DOCKERHUB_TOKEN     -- Docker Hub access token (NOT your password)
+# #   AWS_EC2_HOST        -- EC2 Elastic IP / public DNS
+# #   AWS_EC2_USER        -- SSH user (ubuntu)
+# #   AWS_EC2_SSH_KEY     -- contents of the .pem private key
+# # ============================================================
+# name: CI/CD
+
+# on:
+#   push:
+#     branches: [main]
+#   pull_request:
+#     branches: [main]
+
+# jobs:
+#   test:
+#     name: Run tests
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       - name: Check out the code
+#         uses: actions/checkout@v4
+
+#       - name: Set up Python 3.13
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: "3.13"
+#           cache: pip
+#           cache-dependency-path: requirements-ci.txt
+
+#       - name: Install dependencies (slim CI set)
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install -r requirements-ci.txt
+
+#       - name: Run tests
+#         run: python -m pytest tests/ -v
+
+#   docker:
+#     name: Build & push Docker image
+#     needs: test                              # only if tests pass
+#     if: github.event_name == 'push'          # push to main only, never on PRs
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       - name: Check out the code
+#         uses: actions/checkout@v4
+
+#       - name: Set up Docker Buildx
+#         uses: docker/setup-buildx-action@v3
+
+#       - name: Log in to Docker Hub
+#         uses: docker/login-action@v3
+#         with:
+#           username: ${{ secrets.DOCKERHUB_USERNAME }}
+#           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+#       - name: Build and push image
+#         uses: docker/build-push-action@v6
+#         with:
+#           context: .
+#           push: true
+#           tags: |
+#             ${{ secrets.DOCKERHUB_USERNAME }}/crypto-price-forecasting:latest
+#             ${{ secrets.DOCKERHUB_USERNAME }}/crypto-price-forecasting:${{ github.sha }}
+#           cache-from: type=gha
+#           cache-to: type=gha,mode=max
+
+#   deploy:
+#     name: Deploy to EC2
+#     needs: docker                            # only after the new image is pushed
+#     if: github.event_name == 'push'          # push to main only, never on PRs
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       - name: Pull latest image on EC2 and restart the container
+#         uses: appleboy/ssh-action@v1
+#         with:
+#           host: ${{ secrets.AWS_EC2_HOST }}
+#           username: ${{ secrets.AWS_EC2_USER }}
+#           key: ${{ secrets.AWS_EC2_SSH_KEY }}
+#           script: |
+#             set -e
+#             IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/crypto-price-forecasting:latest"
+
+#             # Grab the freshly-built image (public repo -> no login needed).
+#             docker pull "$IMAGE"
+
+#             # Replace the running container (ignore errors if it's the first run).
+#             docker stop crypto-api 2>/dev/null || true
+#             docker rm   crypto-api 2>/dev/null || true
+
+#             docker run -d \
+#               --name crypto-api \
+#               --restart unless-stopped \
+#               -p 8000:8000 \
+#               "$IMAGE"
+
+#             # Drop the now-dangling old image layers so the disk doesn't fill up.
+#             docker image prune -f
+
+
+
 # ============================================================
 # CI/CD pipeline.
 #
@@ -96,7 +209,20 @@ jobs:
             # Grab the freshly-built image (public repo -> no login needed).
             docker pull "$IMAGE"
 
-            # Replace the running container (ignore errors if it's the first run).
+            # --- Free port 8000 from ANY container, not just "crypto-api" ---
+            # Belt-and-suspenders: a container started manually (different
+            # name) can also be squatting this port and would otherwise block
+            # the new container from binding, even though we never touch it
+            # by name below. This finds and removes whatever is actually
+            # holding the port, regardless of what it's called.
+            PORT_HOGS=$(docker ps -q --filter "publish=8000")
+            if [ -n "$PORT_HOGS" ]; then
+              echo "Port 8000 is in use by: $PORT_HOGS -- stopping it first."
+              docker stop $PORT_HOGS
+              docker rm   $PORT_HOGS
+            fi
+
+            # Replace our own named container too (ignore errors on first run).
             docker stop crypto-api 2>/dev/null || true
             docker rm   crypto-api 2>/dev/null || true
 
