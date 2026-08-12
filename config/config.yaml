@@ -137,3 +137,7 @@ monitoring:
   # A feature counts as "drifted" if its PSI >= psi_major. The overall report
   # raises the DRIFT flag once at least this many features have drifted.
   min_drifted_features: 3
+retrain:
+  drift_gate: true          # if true, only retrain when drift is detected (unless --force)
+  promotion_margin: 0.0     # candidate must beat champion RMSE by at least this much to be promoted
+  container_name: "crypto-api"   # docker container to restart after a promotion
