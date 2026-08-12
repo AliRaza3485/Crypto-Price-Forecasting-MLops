@@ -10,6 +10,9 @@ Endpoints
   GET  /predict/live     -> fetches recent candles from Binance itself, builds
                             features, and returns a full live prediction. No
                             input needed from the caller.
+  GET  /monitoring/drift -> fetches recent candles, builds features, and
+                            compares their distribution to the training data;
+                            returns a per-feature data-drift report (PSI + KS).
 
 Contract
   /predict is the FEATURES-IN contract: the caller supplies the 14 engineered
@@ -32,6 +35,7 @@ from pydantic import BaseModel, Field
 from src.config import CONFIG
 from src.data.data_ingestion import fetch_recent_candles
 from src.models.predict import MODEL_PATH, load_model, predict_from_candles, predict_return
+from src.monitoring.drift import compute_drift, get_current_features
 
 # --- Config for the live endpoint (nothing hard-coded) ---
 _data_cfg = CONFIG["data"]
@@ -115,6 +119,25 @@ class LivePrediction(BaseModel):
     predicted_for_time: str = Field(..., description="ISO timestamp this prediction is FOR (as_of_time + 1h)")
 
 
+class FeatureDrift(BaseModel):
+    """Per-feature drift result (one row of compute_drift()'s report)."""
+
+    feature: str
+    psi: float = Field(..., description="Population Stability Index (>= 0.20 => drifted)")
+    psi_level: str = Field(..., description="stable | moderate | major")
+    ks_pvalue: float = Field(..., description="KS test p-value (informational only)")
+    drifted: bool
+
+
+class DriftReport(BaseModel):
+    """Response shape for GET /monitoring/drift -- mirrors compute_drift()'s dict."""
+
+    n_features: int = Field(..., description="Total features checked")
+    n_drifted: int = Field(..., description="How many features drifted (PSI >= major)")
+    drift_detected: bool = Field(..., description="True once n_drifted >= min_drifted_features")
+    features: list[FeatureDrift]
+
+
 @app.get("/health")
 def health() -> dict:
     """Liveness check + whether the trained model file is present."""
@@ -169,3 +192,34 @@ def predict_live() -> LivePrediction:
         ) from exc
 
     return LivePrediction(**result)
+
+
+@app.get("/monitoring/drift", response_model=DriftReport)
+def monitoring_drift() -> DriftReport:
+    """Data-drift check: compare RECENT live features to the TRAINING data.
+
+    Fetches ~30 days of candles from Binance, builds the model features, and
+    compares their distribution against X_train (per-feature PSI + KS test).
+    Returns the same report as `python -m src.monitoring.drift`.
+
+    Note: each call fetches a fresh batch from Binance, so it's heavier than a
+    single prediction -- intended for periodic monitoring, not per-request use.
+
+    Errors map to a clean 503 (never a raw stack trace):
+      * reference X_train missing on disk -> FileNotFoundError -> 503
+      * not enough recent candles         -> ValueError         -> 503
+      * anything else fetching from Binance                     -> 503
+    """
+    try:
+        current = get_current_features()
+        report = compute_drift(current)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="Upstream data source unavailable"
+        ) from exc
+
+    return DriftReport(**report)

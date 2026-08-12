@@ -70,3 +70,25 @@ mlflow:
   experiment_name: "btc-return-forecasting"     # groups all runs on DagsHub
   run_name: "random_forest_prod"                # this training run's name
   registered_model_name: "btc-rf-forecaster"    # versioned name in the Model Registry
+
+# ============================================================
+# Monitoring / data-drift detection
+# ============================================================
+# Compares the feature distributions the model was TRAINED on (X_train, the
+# "reference") against RECENT live features (the "current" batch). If the
+# recent data looks statistically different, the model is seeing conditions it
+# wasn't trained on -> a signal to investigate / retrain.
+monitoring:
+  # How much recent data to pull for the drift check. Much bigger than the
+  # live-predict window (3 days), because comparing DISTRIBUTIONS needs MANY
+  # rows -- a single latest candle can't form a distribution.
+  drift_lookback: "30 days ago UTC"
+
+  # Thresholds that decide "is this drift?"
+  ks_pvalue_threshold: 0.05   # KS test: p-value below this => distributions differ
+  psi_moderate: 0.10          # PSI 0.10-0.20 => moderate shift (watch)
+  psi_major: 0.20             # PSI >= 0.20 => significant drift
+
+  # A feature counts as "drifted" if its PSI >= psi_major. The overall report
+  # raises the DRIFT flag once at least this many features have drifted.
+  min_drifted_features: 3

@@ -124,6 +124,7 @@ rich==15.0.0
 rpds-py==2026.6.3
 ruamel.yaml==0.19.1
 scikit-learn==1.8.0
+scipy==1.17.1
 scmrepo==3.6.2
 semver==3.0.4
 Send2Trash==2.1.0

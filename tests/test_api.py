@@ -124,3 +124,52 @@ def test_predict_live_upstream_failure_returns_503(monkeypatch):
 
     resp = client.get("/predict/live")
     assert resp.status_code == 503
+
+
+def test_monitoring_drift_success(monkeypatch):
+    """/monitoring/drift should return the drift report as JSON. Both the data
+    fetch (get_current_features) and the maths (compute_drift) are mocked, so
+    this test only checks the endpoint wiring + response shape -- no network,
+    no dependence on X_train being on disk (drift maths is tested in
+    tests/test_drift.py).
+    """
+    canned = {
+        "n_features": 3,
+        "n_drifted": 1,
+        "drift_detected": False,
+        "features": [
+            {"feature": "volatility_24", "psi": 0.31, "psi_level": "major",
+             "ks_pvalue": 0.0, "drifted": True},
+            {"feature": "return_1h", "psi": 0.04, "psi_level": "stable",
+             "ks_pvalue": 0.21, "drifted": False},
+            {"feature": "log_volume", "psi": 0.15, "psi_level": "moderate",
+             "ks_pvalue": 0.03, "drifted": False},
+        ],
+    }
+    monkeypatch.setattr("src.api.app.get_current_features", lambda: None)
+    monkeypatch.setattr("src.api.app.compute_drift", lambda current: canned)
+
+    resp = client.get("/monitoring/drift")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["n_features"] == 3
+    assert body["n_drifted"] == 1
+    assert body["drift_detected"] is False
+    assert len(body["features"]) == 3
+    for row in body["features"]:
+        assert {"feature", "psi", "psi_level", "ks_pvalue", "drifted"} <= row.keys()
+
+
+def test_monitoring_drift_upstream_failure_returns_503(monkeypatch):
+    """Any failure while building the current batch (Binance down, network
+    error, etc.) must surface as a clean 503, not a raw stack trace.
+    """
+
+    def _boom():
+        raise Exception("simulated Binance outage")
+
+    monkeypatch.setattr("src.api.app.get_current_features", _boom)
+
+    resp = client.get("/monitoring/drift")
+    assert resp.status_code == 503
