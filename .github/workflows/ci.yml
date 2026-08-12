@@ -106,9 +106,9 @@ jobs:
             # been cloned/retrained yet, so serving never starts with no model.
             mkdir -p "$MODEL_DIR"
             if [ ! -f "$MODEL_DIR/rf_model.joblib" ]; then
-              docker create --name _seed "$IMAGE"
-              docker cp _seed:/app/models/rf_model.joblib "$MODEL_DIR/rf_model.joblib"
-              docker rm _seed
+              docker create --name seed_tmp "$IMAGE"
+              docker cp seed_tmp:/app/models/rf_model.joblib "$MODEL_DIR/rf_model.joblib"
+              docker rm seed_tmp
             fi
 
             # --- Free port 8000 from ANY container, not just "crypto-api" ---
