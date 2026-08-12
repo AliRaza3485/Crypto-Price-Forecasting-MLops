@@ -1,5 +1,7 @@
 """API tests for src/api/app.py using FastAPI's TestClient (no live server needed)."""
 
+import numpy as np
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
@@ -17,6 +19,30 @@ def _valid_payload(current_close=None) -> dict:
     return payload
 
 
+def _make_synthetic_candles(n_hours: int = 60) -> pd.DataFrame:
+    """Small fake CLEANED OHLCV history: gently rising close, no network needed.
+
+    n_hours=60 is comfortably more than the longest lookback (24), so
+    predict_from_candles() (called inside /predict/live) has enough history
+    to produce a valid prediction.
+    """
+    timestamps = pd.date_range("2025-01-01", periods=n_hours, freq="h")
+    base = np.linspace(60000, 61000, n_hours)
+    wiggle = np.sin(np.linspace(0, 15, n_hours)) * 50
+    close = base + wiggle
+
+    return pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "open": close - 5,
+            "high": close + 15,
+            "low": close - 15,
+            "close": close,
+            "volume": np.linspace(100, 200, n_hours),
+        }
+    )
+
+
 def test_health_ok():
     resp = client.get("/health")
     assert resp.status_code == 200
@@ -31,7 +57,7 @@ def test_predict_returns_float():
     assert resp.status_code == 200
     body = resp.json()
     assert isinstance(body["predicted_return"], float)
-    assert body["predicted_price"] is None   # no close given
+    assert body["predicted_price"] is None  # no close given
 
 
 @pytest.mark.skipif(not MODEL_PATH.exists(), reason="Model not trained yet")
@@ -46,6 +72,55 @@ def test_predict_reconstructs_price():
 
 def test_predict_missing_feature_is_422():
     payload = _valid_payload()
-    payload.pop(feature_names()[0])          # drop a required feature
+    payload.pop(feature_names()[0])  # drop a required feature
     resp = client.post("/predict", json=payload)
-    assert resp.status_code == 422           # pydantic validation error
+    assert resp.status_code == 422  # pydantic validation error
+
+
+@pytest.mark.skipif(not MODEL_PATH.exists(), reason="Model not trained yet")
+def test_predict_live_success(monkeypatch):
+    """/predict/live should work end-to-end WITHOUT hitting Binance, by
+    monkeypatching fetch_recent_candles (as imported into src.api.app) to
+    return synthetic candles instead of calling the real network.
+    """
+    candles = _make_synthetic_candles(n_hours=60)
+
+    def _fake_fetch(symbol, interval, lookback):
+        return candles
+
+    monkeypatch.setattr("src.api.app.fetch_recent_candles", _fake_fetch)
+
+    resp = client.get("/predict/live")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    expected_keys = {
+        "as_of_time",
+        "current_price",
+        "predicted_return",
+        "predicted_price",
+        "predicted_for_time",
+    }
+    assert expected_keys.issubset(body.keys())
+
+    for key in ("current_price", "predicted_return", "predicted_price"):
+        assert np.isfinite(body[key])
+
+    expected_price = body["current_price"] * (1.0 + body["predicted_return"])
+    assert body["predicted_price"] == pytest.approx(expected_price)
+
+
+def test_predict_live_upstream_failure_returns_503(monkeypatch):
+    """If fetching candles fails for ANY reason (Binance down, network error,
+    bad response, etc.), the endpoint must return a clean 503 -- never a raw
+    stack trace. Doesn't need the model, since the failure happens before
+    prediction is even attempted.
+    """
+
+    def _boom(symbol, interval, lookback):
+        raise Exception("simulated Binance outage")
+
+    monkeypatch.setattr("src.api.app.fetch_recent_candles", _boom)
+
+    resp = client.get("/predict/live")
+    assert resp.status_code == 503

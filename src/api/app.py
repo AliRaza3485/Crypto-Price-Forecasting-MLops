@@ -2,15 +2,21 @@
 FastAPI serving app for Crypto-Price-Forecasting-MLops.
 
 Endpoints
-  GET  /health   -> liveness + whether the model file is available.
-  POST /predict  -> given the model's engineered feature row (and, optionally,
-                    the current close price), returns the predicted next-hour
-                    return — plus the reconstructed price when close is given.
+  GET  /health         -> liveness + whether the model file is available.
+  POST /predict         -> given the model's engineered feature row (and,
+                            optionally, the current close price), returns the
+                            predicted next-hour return -- plus the
+                            reconstructed price when close is given.
+  GET  /predict/live     -> fetches recent candles from Binance itself, builds
+                            features, and returns a full live prediction. No
+                            input needed from the caller.
 
 Contract
-  This is the FEATURES-IN contract: the caller supplies the 14 engineered
-  features the model was trained on. A live endpoint that fetches Binance and
-  builds those features itself is a planned follow-up (see project roadmap).
+  /predict is the FEATURES-IN contract: the caller supplies the 14 engineered
+  features the model was trained on. /predict/live is the fully-automatic
+  version: it fetches its own data (via fetch_recent_candles) and builds its
+  own features (via predict_from_candles), so a caller just hits the endpoint
+  with no body at all.
 
 Run locally from the project root:
     uvicorn src.api.app:app --reload
@@ -23,7 +29,17 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from src.models.predict import MODEL_PATH, load_model, predict_return
+from src.config import CONFIG
+from src.data.data_ingestion import fetch_recent_candles
+from src.models.predict import MODEL_PATH, load_model, predict_from_candles, predict_return
+
+# --- Config for the live endpoint (nothing hard-coded) ---
+_data_cfg = CONFIG["data"]
+_serving_cfg = CONFIG["serving"]
+
+SYMBOL = _data_cfg["symbol"]
+INTERVAL = _data_cfg["interval"]
+LIVE_LOOKBACK = _serving_cfg["live_lookback"]
 
 
 @asynccontextmanager
@@ -31,7 +47,7 @@ async def lifespan(app: FastAPI):
     """Warm the model cache at startup if it exists; never crash the server.
 
     If the model is missing we still start (so /health can report it) — only
-    /predict will fail, with a clear 503.
+    /predict and /predict/live will fail, with a clear 503.
     """
     try:
         load_model()
@@ -49,11 +65,7 @@ app = FastAPI(
 
 
 class Features(BaseModel):
-    """The 14 engineered features the model expects (see make_features.py).
-
-    Order here mirrors the model; predict_return() re-validates it anyway, so
-    field order is for readability, not correctness.
-    """
+    """The 14 engineered features the model expects (see make_features.py)."""
 
     return_1h: float = Field(..., description="Current hourly return (% change of close)")
     return_lag_1: float
@@ -78,21 +90,11 @@ class Features(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
-                "return_1h": 0.0012,
-                "return_lag_1": -0.0003,
-                "return_lag_2": 0.0008,
-                "return_lag_3": 0.0001,
-                "return_lag_6": -0.0015,
-                "return_lag_12": 0.0004,
-                "return_lag_24": 0.0009,
-                "close_over_ma_6": 1.001,
-                "volatility_6": 0.004,
-                "close_over_ma_12": 0.998,
-                "volatility_12": 0.005,
-                "close_over_ma_24": 1.002,
-                "volatility_24": 0.006,
-                "log_volume": 8.5,
-                "current_close": 60000.0,
+                "return_1h": 0.0012, "return_lag_1": -0.0003, "return_lag_2": 0.0008,
+                "return_lag_3": 0.0001, "return_lag_6": -0.0015, "return_lag_12": 0.0004,
+                "return_lag_24": 0.0009, "close_over_ma_6": 1.001, "volatility_6": 0.004,
+                "close_over_ma_12": 0.998, "volatility_12": 0.005, "close_over_ma_24": 1.002,
+                "volatility_24": 0.006, "log_volume": 8.5, "current_close": 60000.0,
             }
         }
     }
@@ -101,6 +103,16 @@ class Features(BaseModel):
 class Prediction(BaseModel):
     predicted_return: float = Field(..., description="Predicted next-hour return (fraction, e.g. 0.001 = +0.1%)")
     predicted_price: float | None = Field(None, description="current_close * (1 + predicted_return), if close was given")
+
+
+class LivePrediction(BaseModel):
+    """Response shape for GET /predict/live -- mirrors predict_from_candles()'s dict."""
+
+    as_of_time: str = Field(..., description="ISO timestamp of the latest candle used")
+    current_price: float = Field(..., description="Close price at as_of_time")
+    predicted_return: float = Field(..., description="Predicted next-hour return (fraction)")
+    predicted_price: float = Field(..., description="current_price * (1 + predicted_return)")
+    predicted_for_time: str = Field(..., description="ISO timestamp this prediction is FOR (as_of_time + 1h)")
 
 
 @app.get("/health")
@@ -119,7 +131,6 @@ def predict(payload: Features) -> Prediction:
     try:
         predicted_return = float(predict_return(row)[0])
     except FileNotFoundError as exc:
-        # Model not trained yet -> service unavailable, with a clear message.
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -129,3 +140,32 @@ def predict(payload: Features) -> Prediction:
         predicted_price = current_close * (1.0 + predicted_return)
 
     return Prediction(predicted_return=predicted_return, predicted_price=predicted_price)
+
+
+@app.get("/predict/live", response_model=LivePrediction)
+def predict_live() -> LivePrediction:
+    """Fully-automatic live prediction: fetch recent candles, build features,
+    predict the next-hour return and price. No input needed from the caller.
+
+    Error handling (never leak a raw stack trace to the caller):
+      * Model not trained on disk       -> FileNotFoundError -> 503
+      * Not enough candles for features -> ValueError         -> 503
+      * Anything else going wrong while fetching from Binance
+        (network error, Binance outage, bad response, etc.)   -> 503
+        with a generic "upstream data source unavailable" message, since the
+        exact exception type from a third-party client isn't something we
+        want to hard-code or expose to callers.
+    """
+    try:
+        candles = fetch_recent_candles(SYMBOL, INTERVAL, LIVE_LOOKBACK)
+        result = predict_from_candles(candles)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="Upstream data source unavailable"
+        ) from exc
+
+    return LivePrediction(**result)

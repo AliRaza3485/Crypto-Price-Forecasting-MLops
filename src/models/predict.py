@@ -11,6 +11,17 @@ Why a separate module (not inside the API)?
   reused by the API, by batch scoring, and by tests — and it stays testable
   WITHOUT a running web server or a network connection.
 
+Live inference, offline by design:
+  predict_from_candles() turns a raw (already-cleaned) OHLCV candles DataFrame
+  into a full prediction dict. It does NOT call Binance or any network API —
+  it only transforms a DataFrame that's already in memory. This keeps it:
+    * unit-testable with a synthetic DataFrame, no internet needed, no
+      flaky/rate-limited tests, no mocking a live API in CI, and
+    * reusable: the FastAPI endpoint (next step) will do the network fetch,
+      then hand the candles to this function. If the fetch logic ever changes
+      (different exchange, different endpoint, cached data, backtesting on a
+      historical CSV...), this function doesn't care and doesn't change.
+
 Model source (config-driven):
   Defaults to the local models/rf_model.joblib written by training. The MLflow
   registry copy on DagsHub is the versioned source of truth; loading a specific
@@ -28,6 +39,7 @@ import numpy as np
 import pandas as pd
 
 from src.config import CONFIG, get_path
+from src.features.make_features import add_features
 
 _model_cfg = CONFIG["model"]
 MODEL_PATH = get_path(_model_cfg["model_dir"]) / _model_cfg["model_file"]
@@ -82,6 +94,75 @@ def predict_price(features: pd.DataFrame, current_close) -> np.ndarray:
     """Predict the next-hour PRICE from features + the current close price."""
     returns = predict_return(features)
     return np.asarray(current_close) * (1.0 + returns)
+
+
+def predict_from_candles(candles: pd.DataFrame) -> dict:
+    """Turn recent raw candles into one full live prediction. No network calls.
+
+    This is the pure "brain" of live inference: given candles that are ALREADY
+    in memory (already cleaned — same shape as data_ingestion.clean() returns:
+    timestamp, open, high, low, close, volume), it figures out the current hour
+    and predicts the next one. Fetching those candles from Binance is a
+    separate concern and belongs in the API endpoint, not here — see the
+    module docstring for why.
+
+    Steps:
+      1. add_features(candles) -> the 14 backward-looking features. This is the
+         function that KEEPS the latest row (no target is computed, so nothing
+         forces it to be dropped) — that's exactly the row we need: "given
+         everything up to and including the current hour, describe this hour."
+      2. If nothing comes back, the caller didn't send enough history (the
+         longest lag/rolling window needs 24 prior hours) -> raise a clear
+         ValueError instead of silently failing later.
+      3. Take the LAST row of that result — that's the current hour.
+      4. predict_return() on that one row -> the model's next-hour return.
+      5. Rebuild the price: predicted_price = current_close * (1 + return).
+
+    Args:
+        candles: cleaned OHLCV DataFrame with columns
+            [timestamp, open, high, low, close, volume].
+
+    Returns:
+        dict with:
+          - as_of_time: ISO string, timestamp of the latest candle used
+          - current_price: float, that candle's close
+          - predicted_return: float, model's predicted next-hour return
+          - predicted_price: float, current_price * (1 + predicted_return)
+          - predicted_for_time: ISO string, as_of_time + 1 hour
+
+    Raises:
+        ValueError: if there isn't enough history to build even one full
+            feature row (add_features() drops warm-up rows internally).
+    """
+    feat_df = add_features(candles)
+
+    if feat_df.empty:
+        raise ValueError(
+            "Not enough candles to build features — need more history "
+            "(the longest lag/rolling window requires 24 prior hours)."
+        )
+
+    last_row = feat_df.iloc[[-1]]  # keep as a 1-row DataFrame, not a Series
+
+    as_of_time = pd.Timestamp(last_row["timestamp"].iloc[0])
+    current_price = float(last_row["close"].iloc[0])
+
+    predicted_return = float(predict_return(last_row)[0])
+    predicted_price = current_price * (1.0 + predicted_return)
+    predicted_for_time = as_of_time + pd.Timedelta(hours=1)
+
+    logger.info(
+        "Prediction as_of=%s current_price=%.2f predicted_return=%.6f predicted_price=%.2f",
+        as_of_time, current_price, predicted_return, predicted_price,
+    )
+
+    return {
+        "as_of_time": as_of_time.isoformat(),
+        "current_price": current_price,
+        "predicted_return": predicted_return,
+        "predicted_price": predicted_price,
+        "predicted_for_time": predicted_for_time.isoformat(),
+    }
 
 
 def main() -> None:

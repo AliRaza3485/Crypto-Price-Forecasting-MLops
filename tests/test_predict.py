@@ -8,6 +8,7 @@ from src.models.predict import (
     MODEL_PATH,
     feature_names,
     load_model,
+    predict_from_candles,
     predict_price,
     predict_return,
 )
@@ -22,6 +23,30 @@ pytestmark = pytest.mark.skipif(
 def _neutral_row() -> pd.DataFrame:
     """One feature row of zeros — always valid, order-independent."""
     return pd.DataFrame([{name: 0.0 for name in feature_names()}])
+
+
+def _make_synthetic_candles(n_hours: int = 60) -> pd.DataFrame:
+    """Build a small fake OHLCV history: gently rising close, no network needed.
+
+    n_hours=60 is comfortably more than the longest lookback (24), so
+    add_features() inside predict_from_candles() has enough history to
+    produce at least one valid (non-NaN) row.
+    """
+    timestamps = pd.date_range("2025-01-01", periods=n_hours, freq="h")
+    # Gentle upward drift + a small wiggle, so returns/volatility aren't all zero.
+    base = np.linspace(60000, 61000, n_hours)
+    wiggle = np.sin(np.linspace(0, 15, n_hours)) * 50
+    close = base + wiggle
+
+    candles = pd.DataFrame({
+        "timestamp": timestamps,
+        "open": close - 5,
+        "high": close + 15,
+        "low": close - 15,
+        "close": close,
+        "volume": np.linspace(100, 200, n_hours),
+    })
+    return candles
 
 
 def test_model_loads_with_feature_names():
@@ -59,3 +84,46 @@ def test_predict_price_reconstruction():
     ret = predict_return(row)[0]
     price = predict_price(row, close)[0]
     assert price == pytest.approx(close * (1 + ret))
+
+
+def test_predict_from_candles_returns_expected_shape():
+    """predict_from_candles() should return the expected keys as finite floats,
+    and predicted_price must be consistent with current_price * (1 + predicted_return).
+    """
+    candles = _make_synthetic_candles(n_hours=60)
+
+    result = predict_from_candles(candles)
+
+    # --- keys present ---
+    expected_keys = {
+        "as_of_time",
+        "current_price",
+        "predicted_return",
+        "predicted_price",
+        "predicted_for_time",
+    }
+    assert expected_keys.issubset(result.keys())
+
+    # --- values are finite floats ---
+    assert np.isfinite(result["current_price"])
+    assert np.isfinite(result["predicted_return"])
+    assert np.isfinite(result["predicted_price"])
+
+    # --- as_of_time / predicted_for_time are valid timestamps, 1h apart ---
+    as_of = pd.Timestamp(result["as_of_time"])
+    predicted_for = pd.Timestamp(result["predicted_for_time"])
+    assert predicted_for == as_of + pd.Timedelta(hours=1)
+
+    # --- price reconstruction formula must hold exactly ---
+    expected_price = result["current_price"] * (1.0 + result["predicted_return"])
+    assert result["predicted_price"] == pytest.approx(expected_price)
+
+
+def test_predict_from_candles_too_few_rows_raises_value_error():
+    """Too little history (not enough for even one full feature row) should
+    raise a clear ValueError instead of silently returning garbage.
+    """
+    candles = _make_synthetic_candles(n_hours=5)  # far fewer than the 24 needed
+
+    with pytest.raises(ValueError):
+        predict_from_candles(candles)

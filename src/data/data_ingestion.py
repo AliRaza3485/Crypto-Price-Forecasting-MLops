@@ -25,18 +25,9 @@ OUTPUT_FILE = get_path(_data_cfg["raw_dir"]) / _data_cfg["raw_file"]
 
 # Binance returns 12 fields per candle; these are their names in order.
 KLINE_COLUMNS = [
-    "open_time",
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume",
-    "close_time",
-    "quote_asset_volume",
-    "num_trades",
-    "taker_buy_base",
-    "taker_buy_quote",
-    "ignore",
+    "open_time", "open", "high", "low", "close", "volume",
+    "close_time", "quote_asset_volume", "num_trades",
+    "taker_buy_base", "taker_buy_quote", "ignore",
 ]
 
 logging.basicConfig(
@@ -71,6 +62,26 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.rename(columns={"open_time": "timestamp"})
     return df.sort_values("timestamp").reset_index(drop=True)
+
+
+def fetch_recent_candles(symbol: str, interval: str, lookback: str) -> pd.DataFrame:
+    """Fetch recent candles from Binance and return them already cleaned.
+
+    Thin wrapper around fetch_klines() + clean() -- no new logic, just glues
+    the two existing steps together. Built for the LIVE prediction endpoint,
+    which only cares about "give me clean recent candles", not the two-step
+    fetch/clean split.
+
+    Why a separate function instead of calling fetch_klines() + clean() inline
+    in the API code?
+      * ONE call for the endpoint: `fetch_recent_candles(sym, interval, lookback)`
+        instead of two lines repeated everywhere it's needed.
+      * ONE clean point to mock in tests: tests can monkeypatch this single
+        function to return synthetic candles, without touching fetch_klines()
+        or clean() individually, and without ever hitting the real network.
+    """
+    raw = fetch_klines(symbol, interval, lookback)
+    return clean(raw)
 
 
 def main() -> None:

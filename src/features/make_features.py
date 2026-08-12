@@ -25,6 +25,14 @@ What we keep / drop:
   * KEEP `close` as a REFERENCE column (NOT a feature) -> needed to rebuild the
     predicted price and to compute the actual price during evaluation.
 
+Two-function split (added for live inference):
+  * add_features(df)   -> ONLY the 14 backward-looking features. No target.
+                           Keeps the latest row (needed to predict the NEXT hour
+                           live, since that row has no target yet).
+  * build_features(df) -> calls add_features(df), then adds the forward target
+                           and drops NaN rows. Used for TRAINING. Output is
+                           unchanged from before the refactor.
+
 All paths/params come from config/config.yaml. Run from the project root:
     python -m src.features.make_features
 """
@@ -51,6 +59,7 @@ ROLL_WINDOWS = _feat_cfg["roll_windows"]
 # for reconstruction/evaluation, and the target itself.
 NON_FEATURE_COLS = ["timestamp", "close", "target"]
 
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -58,11 +67,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Add scale-free features + a forward-return target to a clean OHLCV frame.
+def add_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add ONLY the 14 backward-looking features to a clean OHLCV frame. No target.
 
-    Every feature looks BACKWARD (past/current only). The target is the only
-    forward-looking column.
+    Every feature here looks BACKWARD (past/current close/volume only), so this
+    function is safe to call on live data: it never needs a future price.
+
+    Because there is no target computed in this function, the most RECENT row
+    is never dropped for a missing target. This is exactly the row a live
+    prediction service needs: "given everything known up to and including the
+    current hour, what features describe this hour?" -> feed that row to the
+    model to predict the NEXT hour's return.
+
+    The only rows dropped here are the warm-up rows at the START of the
+    dataframe, where lags/rolling windows don't have enough history yet
+    (e.g. return_lag_24 needs 24 prior rows to exist).
+
+    Returns:
+        DataFrame with columns: timestamp, close (reference), + 14 features.
     """
     df = df.sort_values("timestamp").reset_index(drop=True).copy()
 
@@ -84,21 +106,54 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     # --- Volume: tame the right-skew with a log transform ---
     df["log_volume"] = np.log1p(df["volume"])
 
-    # --- TARGET: next-hour RETURN (scale-free), not the raw price ---
-    #   target_t = close_{t+HORIZON} / close_t - 1
-    df["target"] = df["close"].shift(-HORIZON) / df["close"] - 1
-
-    # --- Keep timestamp + close (reference) + features + target; drop raw OHLCV ---
+    # --- Keep timestamp + close (reference) + the 14 features; drop raw OHLCV ---
     feature_cols = [
         c for c in df.columns
         if c not in NON_FEATURE_COLS and c not in ("open", "high", "low", "volume")
     ]
-    df = df[["timestamp", "close", *feature_cols, "target"]]
+    df = df[["timestamp", "close", *feature_cols]]
 
-    # --- Drop rows made NaN by lags/rolling (start) and by the target (end) ---
+    # --- Drop ONLY the warm-up NaN rows at the start (from lags/rolling windows) ---
+    # NOTE: no target column exists yet, so dropna() here can never remove the
+    # latest row -> the latest row always survives.
     n_before = len(df)
     df = df.dropna().reset_index(drop=True)
-    logger.info("Dropped %d edge rows with NaNs -> %d usable rows.", n_before - len(df), len(df))
+    logger.info(
+        "add_features: dropped %d warm-up rows with NaNs -> %d usable rows (latest row kept).",
+        n_before - len(df), len(df),
+    )
+
+    return df
+
+
+def build_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add scale-free features + a forward-return target to a clean OHLCV frame.
+
+    Internally calls add_features(df) to get the 14 backward-looking features,
+    then adds the forward-looking target on top. This function is for TRAINING
+    only (it needs the future price to compute the target), so the last
+    HORIZON row(s) are dropped -- that is expected and correct here.
+
+    Output is identical to the pre-refactor single-function version: same
+    rows, same columns, same values.
+    """
+    df = add_features(df)
+
+    # --- TARGET: next-hour RETURN (scale-free), not the raw price ---
+    #   target_t = close_{t+HORIZON} / close_t - 1
+    df["target"] = df["close"].shift(-HORIZON) / df["close"] - 1
+
+    # --- Reorder: timestamp + close (reference) + features + target ---
+    feature_cols = [c for c in df.columns if c not in NON_FEATURE_COLS]
+    df = df[["timestamp", "close", *feature_cols, "target"]]
+
+    # --- Drop rows made NaN by the target (the last HORIZON rows) ---
+    n_before = len(df)
+    df = df.dropna().reset_index(drop=True)
+    logger.info(
+        "build_features: dropped %d rows with no future target -> %d usable rows.",
+        n_before - len(df), len(df),
+    )
 
     return df
 

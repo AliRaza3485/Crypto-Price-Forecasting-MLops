@@ -3,6 +3,12 @@
 # Change values HERE — no need to touch any code.
 # All paths are relative to the project root.
 # ============================================================
+serving:
+  # Short recent window used ONLY for live prediction (not training).
+  # "3 days ago UTC" -> ~72 hourly candles, safely more than the 25 rows
+  # the features need (longest lookback = 24), with buffer for any
+  # candles Binance might be missing.
+  live_lookback: "3 days ago UTC"
 
 data:
   # --- Which market to pull from Binance ---
