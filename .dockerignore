@@ -25,6 +25,8 @@ tests/
 data/
 .dvc/
 *.dvc
+# Exception: drift reference data IS needed for /monitoring/drift endpoint
+!data/processed/X_train.parquet
 
 # Training-only deps file (image uses requirements-ci.txt)
 requirements.txt

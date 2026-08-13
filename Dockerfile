@@ -27,6 +27,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY src/ ./src/
 COPY config/ ./config/
 COPY models/ ./models/
+COPY data/processed/X_train.parquet ./data/processed/X_train.parquet
 
 EXPOSE 8000
 
