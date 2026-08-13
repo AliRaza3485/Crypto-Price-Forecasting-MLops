@@ -111,6 +111,16 @@ jobs:
               docker rm seed_tmp
             fi
 
+            # Host dir the container's /app/data/history mounts over -- same
+            # durability pattern as MODEL_DIR. This is where the background
+            # scheduler's SQLite prediction-history file lives (see
+            # src/monitoring/history.py + config/config.yaml's history:
+            # section). No seeding needed: the app creates the DB file itself
+            # on startup (history.init_db()), so an empty dir is fine on a
+            # brand-new host.
+            HISTORY_DIR=/home/ubuntu/Crypto-Price-Forecasting-MLops/data/history
+            mkdir -p "$HISTORY_DIR"
+
             # --- Free port 8000 from ANY container, not just "crypto-api" ---
             # Belt-and-suspenders: a container started manually (different
             # name) can also be squatting this port and would otherwise block
@@ -133,6 +143,7 @@ jobs:
               --restart unless-stopped \
               -p 8000:8000 \
               -v "$MODEL_DIR":/app/models \
+              -v "$HISTORY_DIR":/app/data/history \
               "$IMAGE"
 
             # Drop the now-dangling old image layers so the disk doesn't fill up.
