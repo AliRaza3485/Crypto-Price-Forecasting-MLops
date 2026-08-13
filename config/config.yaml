@@ -141,3 +141,16 @@ retrain:
   drift_gate: true          # if true, only retrain when drift is detected (unless --force)
   promotion_margin: 0.0     # candidate must beat champion RMSE by at least this much to be promoted
   container_name: "crypto-api"   # docker container to restart after a promotion
+
+# ============================================================
+# Prediction history logging
+# ============================================================
+# Powers the frontend's "predicted vs actual" panel. A lightweight background
+# scheduler (inside the API process -- no separate cron job) calls
+# /predict/live's logic every poll_interval_minutes, logs the result to a
+# small SQLite file, and backfills actual_price once each prediction's
+# target hour has actually passed. See src/monitoring/history.py.
+history:
+  db_dir: "data/history"
+  db_file: "predictions.db"
+  poll_interval_minutes: 60   # how often the scheduler logs a fresh live prediction
