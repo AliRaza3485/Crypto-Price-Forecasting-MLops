@@ -14,6 +14,7 @@
 fastapi==0.128.8
 uvicorn==0.40.0
 pydantic==2.13.4
+apscheduler==3.11.3      # in-process background job -- periodic /predict/live logging
 
 # --- Data / features / model ---
 numpy==2.5.2
