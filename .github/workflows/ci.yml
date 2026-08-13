@@ -48,13 +48,23 @@ jobs:
 
   docker:
     name: Build & push Docker image
-    needs: test                              # only if tests pass
-    if: github.event_name == 'push'          # push to main only, never on PRs
+    needs: test
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
 
     steps:
       - name: Check out the code
         uses: actions/checkout@v4
+
+      - name: Install DVC with DagsHub support
+        run: pip install "dvc[s3]"
+
+      - name: Pull drift reference data from DagsHub
+        run: |
+          dvc remote modify origin --local auth basic
+          dvc remote modify origin --local user ${{ secrets.DAGSHUB_USERNAME }}
+          dvc remote modify origin --local password ${{ secrets.DAGSHUB_TOKEN }}
+          dvc pull data/processed/X_train.parquet.dvc
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
