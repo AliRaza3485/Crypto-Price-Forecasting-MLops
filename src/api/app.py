@@ -13,6 +13,9 @@ Endpoints
   GET  /monitoring/drift -> fetches recent candles, builds features, and
                             compares their distribution to the training data;
                             returns a per-feature data-drift report (PSI + KS).
+  GET  /predict/history   -> returns recently logged live predictions
+                            (resolved + pending) from the background history
+                            logger, for a "predicted vs actual" chart.
 
 Contract
   /predict is the FEATURES-IN contract: the caller supplies the 14 engineered
@@ -21,43 +24,102 @@ Contract
   own features (via predict_from_candles), so a caller just hits the endpoint
   with no body at all.
 
+Background history logging
+  A lightweight APScheduler BackgroundScheduler runs INSIDE this process
+  (started in lifespan(), stopped on shutdown) and, every
+  config["history"]["poll_interval_minutes"], repeats the exact same work as
+  GET /predict/live -- fetch candles, predict -- then logs the result to a
+  small SQLite file (src/monitoring/history.py) and backfills actual_price
+  for any earlier prediction whose target hour has now arrived. This is what
+  GET /predict/history reads from. No separate cron job or service needed.
+
 Run locally from the project root:
     uvicorn src.api.app:app --reload
 Then open the interactive docs:  http://127.0.0.1:8000/docs
 """
 
+import logging
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 import pandas as pd
+from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from src.config import CONFIG
 from src.data.data_ingestion import fetch_recent_candles
-from src.models.predict import MODEL_PATH, load_model, predict_from_candles, predict_return
+from src.models.predict import (
+    MODEL_PATH,
+    load_model,
+    predict_from_candles,
+    predict_return,
+)
+from src.monitoring import history
 from src.monitoring.drift import compute_drift, get_current_features
+
+logger = logging.getLogger(__name__)
 
 # --- Config for the live endpoint (nothing hard-coded) ---
 _data_cfg = CONFIG["data"]
 _serving_cfg = CONFIG["serving"]
+_history_cfg = CONFIG["history"]
 
 SYMBOL = _data_cfg["symbol"]
 INTERVAL = _data_cfg["interval"]
 LIVE_LOOKBACK = _serving_cfg["live_lookback"]
+HISTORY_POLL_MINUTES = _history_cfg["poll_interval_minutes"]
+
+
+def _log_live_prediction() -> None:
+    """Scheduler job: fetch candles, predict, log the result, resolve older ones.
+
+    Deliberately swallows and logs ANY exception -- a single failed poll
+    (e.g. Binance hiccup) must never crash the scheduler thread, which would
+    silently kill all FUTURE polls too.
+    """
+    try:
+        candles = fetch_recent_candles(SYMBOL, INTERVAL, LIVE_LOOKBACK)
+        result = predict_from_candles(candles)
+        history.log_prediction(result)
+        history.resolve_pending(candles)
+    except Exception:
+        logger.exception("Background history poll failed -- will retry next interval")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Warm the model cache at startup if it exists; never crash the server.
+    """Warm the model cache, init the history DB, and start the background
+    history-logging scheduler at startup; never crash the server if the
+    model is missing, and always stop the scheduler cleanly on shutdown.
 
-    If the model is missing we still start (so /health can report it) — only
-    /predict and /predict/live will fail, with a clear 503.
+    If the model is missing we still start (so /health can report it) --
+    only /predict and /predict/live will fail, with a clear 503. The
+    scheduler job itself already guards against a missing model the same
+    way (it just logs and retries next interval).
     """
     try:
         load_model()
     except FileNotFoundError:
         pass  # /health will show model_available=False
+
+    history.init_db()
+
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        _log_live_prediction,
+        "interval",
+        minutes=HISTORY_POLL_MINUTES,
+        id="log_live_prediction",
+        # Fire once immediately on startup (not just after the first full
+        # interval), so history isn't empty right after every deploy/restart.
+        next_run_time=datetime.now(),
+    )
+    scheduler.start()
+
     yield
+
+    scheduler.shutdown(wait=False)
 
 
 app = FastAPI(
@@ -71,14 +133,18 @@ app = FastAPI(
 class Features(BaseModel):
     """The 14 engineered features the model expects (see make_features.py)."""
 
-    return_1h: float = Field(..., description="Current hourly return (% change of close)")
+    return_1h: float = Field(
+        ..., description="Current hourly return (% change of close)"
+    )
     return_lag_1: float
     return_lag_2: float
     return_lag_3: float
     return_lag_6: float
     return_lag_12: float
     return_lag_24: float
-    close_over_ma_6: float = Field(..., description="close / 6h moving average (scale-free)")
+    close_over_ma_6: float = Field(
+        ..., description="close / 6h moving average (scale-free)"
+    )
     volatility_6: float = Field(..., description="std of returns over 6h")
     close_over_ma_12: float
     volatility_12: float
@@ -94,19 +160,33 @@ class Features(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
-                "return_1h": 0.0012, "return_lag_1": -0.0003, "return_lag_2": 0.0008,
-                "return_lag_3": 0.0001, "return_lag_6": -0.0015, "return_lag_12": 0.0004,
-                "return_lag_24": 0.0009, "close_over_ma_6": 1.001, "volatility_6": 0.004,
-                "close_over_ma_12": 0.998, "volatility_12": 0.005, "close_over_ma_24": 1.002,
-                "volatility_24": 0.006, "log_volume": 8.5, "current_close": 60000.0,
+                "return_1h": 0.0012,
+                "return_lag_1": -0.0003,
+                "return_lag_2": 0.0008,
+                "return_lag_3": 0.0001,
+                "return_lag_6": -0.0015,
+                "return_lag_12": 0.0004,
+                "return_lag_24": 0.0009,
+                "close_over_ma_6": 1.001,
+                "volatility_6": 0.004,
+                "close_over_ma_12": 0.998,
+                "volatility_12": 0.005,
+                "close_over_ma_24": 1.002,
+                "volatility_24": 0.006,
+                "log_volume": 8.5,
+                "current_close": 60000.0,
             }
         }
     }
 
 
 class Prediction(BaseModel):
-    predicted_return: float = Field(..., description="Predicted next-hour return (fraction, e.g. 0.001 = +0.1%)")
-    predicted_price: float | None = Field(None, description="current_close * (1 + predicted_return), if close was given")
+    predicted_return: float = Field(
+        ..., description="Predicted next-hour return (fraction, e.g. 0.001 = +0.1%)"
+    )
+    predicted_price: float | None = Field(
+        None, description="current_close * (1 + predicted_return), if close was given"
+    )
 
 
 class LivePrediction(BaseModel):
@@ -114,16 +194,24 @@ class LivePrediction(BaseModel):
 
     as_of_time: str = Field(..., description="ISO timestamp of the latest candle used")
     current_price: float = Field(..., description="Close price at as_of_time")
-    predicted_return: float = Field(..., description="Predicted next-hour return (fraction)")
-    predicted_price: float = Field(..., description="current_price * (1 + predicted_return)")
-    predicted_for_time: str = Field(..., description="ISO timestamp this prediction is FOR (as_of_time + 1h)")
+    predicted_return: float = Field(
+        ..., description="Predicted next-hour return (fraction)"
+    )
+    predicted_price: float = Field(
+        ..., description="current_price * (1 + predicted_return)"
+    )
+    predicted_for_time: str = Field(
+        ..., description="ISO timestamp this prediction is FOR (as_of_time + 1h)"
+    )
 
 
 class FeatureDrift(BaseModel):
     """Per-feature drift result (one row of compute_drift()'s report)."""
 
     feature: str
-    psi: float = Field(..., description="Population Stability Index (>= 0.20 => drifted)")
+    psi: float = Field(
+        ..., description="Population Stability Index (>= 0.20 => drifted)"
+    )
     psi_level: str = Field(..., description="stable | moderate | major")
     ks_pvalue: float = Field(..., description="KS test p-value (informational only)")
     drifted: bool
@@ -134,8 +222,39 @@ class DriftReport(BaseModel):
 
     n_features: int = Field(..., description="Total features checked")
     n_drifted: int = Field(..., description="How many features drifted (PSI >= major)")
-    drift_detected: bool = Field(..., description="True once n_drifted >= min_drifted_features")
+    drift_detected: bool = Field(
+        ..., description="True once n_drifted >= min_drifted_features"
+    )
     features: list[FeatureDrift]
+
+
+class HistoryEntry(BaseModel):
+    """One logged prediction -- mirrors a row from history.get_history()."""
+
+    as_of_time: str = Field(
+        ..., description="ISO timestamp of the candle used for this prediction"
+    )
+    current_price: float
+    predicted_return: float
+    predicted_price: float
+    predicted_for_time: str = Field(
+        ..., description="ISO timestamp this prediction was FOR"
+    )
+    actual_price: float | None = Field(
+        None,
+        description="Real close price once predicted_for_time has passed; null while pending",
+    )
+    error: float | None = Field(
+        None, description="actual_price - predicted_price; null while pending"
+    )
+
+
+class HistoryResponse(BaseModel):
+    """Response shape for GET /predict/history."""
+
+    hours: int = Field(..., description="How many hours back this response covers")
+    count: int = Field(..., description="Number of entries returned")
+    entries: list[HistoryEntry]
 
 
 @app.get("/health")
@@ -148,7 +267,9 @@ def health() -> dict:
 def predict(payload: Features) -> Prediction:
     """Predict the next-hour return (and price, if current_close was supplied)."""
     data = payload.model_dump()
-    current_close = data.pop("current_close")   # remove -> leaves exactly the 14 features
+    current_close = data.pop(
+        "current_close"
+    )  # remove -> leaves exactly the 14 features
     row = pd.DataFrame([data])
 
     try:
@@ -162,7 +283,9 @@ def predict(payload: Features) -> Prediction:
     if current_close is not None:
         predicted_price = current_close * (1.0 + predicted_return)
 
-    return Prediction(predicted_return=predicted_return, predicted_price=predicted_price)
+    return Prediction(
+        predicted_return=predicted_return, predicted_price=predicted_price
+    )
 
 
 @app.get("/predict/live", response_model=LivePrediction)
@@ -223,3 +346,22 @@ def monitoring_drift() -> DriftReport:
         ) from exc
 
     return DriftReport(**report)
+
+
+@app.get("/predict/history", response_model=HistoryResponse)
+def predict_history(hours: int = 24) -> HistoryResponse:
+    """Recently logged live predictions (resolved + pending), newest first.
+
+    Reads from the SQLite history the background scheduler has been writing
+    to since this process started (see _log_live_prediction / lifespan()) --
+    it does NOT hit Binance or the model on every call, so this is cheap.
+
+    Args:
+        hours: how far back to look (default 24). A fresh deploy will have
+            an empty/short history until the scheduler has had time to run.
+    """
+    if hours <= 0:
+        raise HTTPException(status_code=400, detail="hours must be a positive integer")
+
+    entries = history.get_history(hours=hours)
+    return HistoryResponse(hours=hours, count=len(entries), entries=entries)
