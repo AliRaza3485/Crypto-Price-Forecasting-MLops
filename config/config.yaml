@@ -139,7 +139,14 @@ monitoring:
   min_drifted_features: 3
 retrain:
   drift_gate: true          # if true, only retrain when drift is detected (unless --force)
-  promotion_margin: 0.0     # candidate must beat champion RMSE by at least this much to be promoted
+  # Candidate must beat champion RMSE by at least this much to be promoted.
+  # Grounded in this project's own documented scale: the tuned model beats
+  # the naive baseline by only ~1e-5 RMSE (see "Honest result" in README),
+  # so a margin of 0.0 accepts pure noise as "improvement". 1e-6 is one
+  # order of magnitude below that signal -- big enough to reject
+  # run-to-run RandomForest/data-window noise, small enough not to block
+  # a real win given how close-to-random-walk this target is.
+  promotion_margin: 0.000001
   container_name: "crypto-api"   # docker container to restart after a promotion
 
 # ============================================================

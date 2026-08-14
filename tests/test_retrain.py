@@ -1,22 +1,17 @@
-"""
-Tests for src.models.retrain.
-
-PURE unit tests only: no real network, no MLflow, no Docker, no file I/O.
-Every external touchpoint (drift check, subprocess) is monkeypatched. Where a
-code path must prove it never reaches the network (force / drift_gate=False
-shortcuts in should_retrain), we monkeypatch the network-facing functions to
-raise -- if the test passes, they were never called.
-"""
-
-import pytest
-
-# src.models.retrain imports mlflow at module level, which is a training-only
-# dependency not installed in the slim CI/serving environment (see
-# requirements.txt comment). Skip this whole module instead of erroring out
-# when mlflow isn't available.
-pytest.importorskip("mlflow")
-
 from src.models import retrain
+
+# NOTE: retrain.py (like model_training.py) imports mlflow LAZILY -- only
+# inside promote()/log_rejection(), not at module level. That means this
+# whole module, and every pure function tested below (decide_promotion,
+# should_retrain, restart_serving), imports and runs fine in the slim
+# requirements-ci.txt env with NO mlflow installed -- verified directly.
+# promote()/log_rejection() themselves aren't covered here since they need
+# real mlflow; that's an accepted gap, not the reason to skip everything
+# else. Previously this entire file was skipped in CI via
+# `pytest.importorskip("mlflow")`, which meant NONE of these tests ever
+# actually ran in GitHub Actions -- only locally, with the full training
+# env installed. Removing that guard is what makes CI's green checkmark
+# mean something for this file.
 
 
 def make_metrics(rmse: float) -> dict:
