@@ -40,6 +40,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from src.config import CONFIG, get_path
+from src.models.model_meta import build_meta, save_meta
 
 # NOTE: mlflow and python-dotenv are TRAINING-only deps and are deliberately
 # NOT in the slim requirements-ci.txt (which also builds the serving image).
@@ -171,6 +172,19 @@ def train():
         # --- Also keep a local copy (handy for offline serving / DVC) ---
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
         joblib.dump(model, MODEL_PATH)
+
+        # --- Sidecar metadata for /model/info (see model_meta.py) ---
+        meta = build_meta(
+            algorithm=ALGORITHM,
+            params=RF_PARAMS,
+            metrics=metrics,
+            n_features=X_train.shape[1],
+            feature_names=list(X_train.columns),
+            mlflow_run_id=run.info.run_id,
+            registered_model_name=REGISTERED_MODEL_NAME,
+            source="initial_training",
+        )
+        save_meta(meta)
 
         logger.info("Run ID: %s", run.info.run_id)
         logger.info("Test metrics:")

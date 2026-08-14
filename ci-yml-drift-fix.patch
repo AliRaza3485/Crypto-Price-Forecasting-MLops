@@ -1,0 +1,39 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index ed782e8..2a77aa9 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -131,6 +131,26 @@ jobs:
+             HISTORY_DIR=/home/ubuntu/Crypto-Price-Forecasting-MLops/data/history
+             mkdir -p "$HISTORY_DIR"
+ 
++            # Host dir the container's /app/data/processed mounts over. This is
++            # where retrain.py's refresh_data() (running on the host via cron)
++            # writes the drift reference (X_train.parquet) every retrain run --
++            # promoted OR rejected. Without this mount, the container only ever
++            # sees whatever X_train.parquet was baked in at image build time
++            # (see Dockerfile's `COPY data/processed/X_train.parquet ...`),
++            # so /monitoring/drift silently compares against a stale,
++            # build-time-frozen reference no matter how often retrain.py runs
++            # on the host. Mounting this dir keeps drift monitoring live.
++            DATA_DIR=/home/ubuntu/Crypto-Price-Forecasting-MLops/data/processed
++
++            # Seed from the image if this host hasn't retrained yet, so serving
++            # never starts with a missing reference (same pattern as MODEL_DIR).
++            mkdir -p "$DATA_DIR"
++            if [ ! -f "$DATA_DIR/X_train.parquet" ]; then
++              docker create --name seed_data_tmp "$IMAGE"
++              docker cp seed_data_tmp:/app/data/processed/X_train.parquet "$DATA_DIR/X_train.parquet"
++              docker rm seed_data_tmp
++            fi
++
+             # --- Free port 8000 from ANY container, not just "crypto-api" ---
+             # Belt-and-suspenders: a container started manually (different
+             # name) can also be squatting this port and would otherwise block
+@@ -154,6 +174,7 @@ jobs:
+               -p 8000:8000 \
+               -v "$MODEL_DIR":/app/models \
+               -v "$HISTORY_DIR":/app/data/history \
++              -v "$DATA_DIR":/app/data/processed \
+               "$IMAGE"
+ 
+             # Drop the now-dangling old image layers so the disk doesn't fill up.

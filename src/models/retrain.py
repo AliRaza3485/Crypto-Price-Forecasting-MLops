@@ -54,6 +54,7 @@ from src.models.model_training import (
     load_splits,
     setup_mlflow,
 )
+from src.models.model_meta import build_meta, save_meta
 from src.monitoring.drift import compute_drift, format_report, get_current_features
 
 # Same reason as model_training.py: MLflow prints an emoji on run-end that
@@ -181,6 +182,20 @@ def promote(model, cand_metrics: dict, champ_metrics: dict | None, X_train) -> N
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, MODEL_PATH)
     logger.info("Local champion overwritten -> %s", MODEL_PATH)
+
+    # --- Sidecar metadata for /model/info (see model_meta.py) ---
+    meta = build_meta(
+        algorithm="RandomForestRegressor",
+        params=RF_PARAMS,
+        metrics=cand_metrics,
+        n_features=X_train.shape[1],
+        feature_names=list(X_train.columns),
+        mlflow_run_id=run.info.run_id,
+        registered_model_name=REGISTERED_MODEL_NAME,
+        source="retrain_promoted",
+        champion_metrics=champ_metrics,
+    )
+    save_meta(meta)
 
     restart_serving()
 

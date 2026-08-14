@@ -49,6 +49,7 @@ from pydantic import BaseModel, Field
 
 from src.config import CONFIG
 from src.data.data_ingestion import fetch_recent_candles
+from src.models.model_meta import load_meta
 from src.models.predict import (
     MODEL_PATH,
     load_model,
@@ -257,10 +258,46 @@ class HistoryResponse(BaseModel):
     entries: list[HistoryEntry]
 
 
+class ModelInfo(BaseModel):
+    """Response shape for GET /model/info."""
+
+    available: bool = Field(..., description="Whether metadata was found on disk")
+    algorithm: str | None = Field(None, description="e.g. 'random_forest'")
+    trained_at: str | None = Field(None, description="ISO timestamp of this model version")
+    source: str | None = Field(
+        None, description="'initial_training' or 'retrain_promoted'"
+    )
+    metrics: dict | None = Field(None, description="Test-set metrics for this version")
+    n_features: int | None = None
+    mlflow_run_id: str | None = None
+    registered_model_name: str | None = None
+
+
 @app.get("/health")
 def health() -> dict:
     """Liveness check + whether the trained model file is present."""
     return {"status": "ok", "model_available": MODEL_PATH.exists()}
+
+
+@app.get("/model/info", response_model=ModelInfo)
+def model_info() -> ModelInfo:
+    """Metadata about the currently-served model version: algorithm, when it
+    was (re)trained, its test metrics, and whether it came from initial
+    training or a promoted retrain.
+
+    Reads a small sidecar JSON written next to the model file at train/promote
+    time (see src/models/model_meta.py) -- never touches the model itself, so
+    this stays cheap and always reflects the model actually on disk.
+
+    Returns available=False (not a 503) when no metadata exists yet -- e.g.
+    a model trained before this endpoint existed, or a fresh deploy where
+    training hasn't run. The caller can render "not yet reported" instead of
+    treating it as an error.
+    """
+    meta = load_meta()
+    if meta is None:
+        return ModelInfo(available=False)
+    return ModelInfo(available=True, **meta)
 
 
 @app.post("/predict", response_model=Prediction)
